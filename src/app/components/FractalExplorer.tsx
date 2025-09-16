@@ -2,8 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-
-interface FractalExplorerProps {}
+import '../../types/webgpu-constants';
 
 interface ViewState {
   zoom: number;
@@ -36,7 +35,7 @@ interface SelectionRect {
   endY: number;
 }
 
-export default function FractalExplorer({}: FractalExplorerProps) {
+export default function FractalExplorer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -87,7 +86,7 @@ export default function FractalExplorer({}: FractalExplorerProps) {
       const canvas = canvasRef.current;
       if (!canvas) return null;
 
-      const context = canvas.getContext('webgpu') as GPUCanvasContext;
+      const context = canvas.getContext('webgpu') as unknown as GPUCanvasContext;
       if (!context) {
         setSupportsWebGPU(false);
         return null;
@@ -363,8 +362,6 @@ export default function FractalExplorer({}: FractalExplorerProps) {
     const heightData = new Float32Array(meshResolution * meshResolution);
     const colorData = new Uint8Array(meshResolution * meshResolution * 3);
     
-    const zoomScale = Math.min(dimensions.width, dimensions.height) / 3.5 * viewState.zoom;
-    
     for (let y = 0; y < meshResolution; y++) {
       for (let x = 0; x < meshResolution; x++) {
         const index = y * meshResolution + x;
@@ -397,7 +394,7 @@ export default function FractalExplorer({}: FractalExplorerProps) {
     }
     
     return { heightData, colorData, resolution: meshResolution };
-  }, [viewState, dimensions]);
+  }, [viewState]);
 
   const create3DMesh = useCallback(() => {
     if (!sceneRef.current) return;
@@ -451,7 +448,7 @@ export default function FractalExplorer({}: FractalExplorerProps) {
     
     sceneRef.current.add(mesh);
     meshRef.current = mesh;
-  }, [generateMandelbrotHeightMap]);
+  }, [generateMandelbrotHeightMap, resolution]);
 
   useEffect(() => {
     if (dimensions.width > 0 && dimensions.height > 0) {
@@ -525,6 +522,86 @@ export default function FractalExplorer({}: FractalExplorerProps) {
     device.queue.submit([commandEncoder.finish()]);
   }, [webgpuRenderer, dimensions, viewState]);
 
+  const mandelbrot = (cx: number, cy: number, maxIter: number = 100): number => {
+    let x = 0;
+    let y = 0;
+    let iter = 0;
+
+    while (x * x + y * y <= 4 && iter < maxIter) {
+      const xtemp = x * x - y * y + cx;
+      y = 2 * x * y + cy;
+      x = xtemp;
+      iter++;
+    }
+
+    return iter;
+  };
+
+  const hslToRgb = (h: number, s: number, l: number): [number, number, number] => {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs((h * 6) % 2 - 1));
+    const m = l - c / 2;
+
+    let r = 0, g = 0, b = 0;
+
+    if (0 <= h && h < 1/6) {
+      r = c; g = x; b = 0;
+    } else if (1/6 <= h && h < 2/6) {
+      r = x; g = c; b = 0;
+    } else if (2/6 <= h && h < 3/6) {
+      r = 0; g = c; b = x;
+    } else if (3/6 <= h && h < 4/6) {
+      r = 0; g = x; b = c;
+    } else if (4/6 <= h && h < 5/6) {
+      r = x; g = 0; b = c;
+    } else if (5/6 <= h && h < 1) {
+      r = c; g = 0; b = x;
+    }
+
+    return [
+      Math.round((r + m) * 255),
+      Math.round((g + m) * 255),
+      Math.round((b + m) * 255)
+    ];
+  };
+
+  const renderMandelbrot = useCallback((ctx: CanvasRenderingContext2D, width: number, height: number, view: ViewState) => {
+    const imageData = ctx.createImageData(width, height);
+    const data = imageData.data;
+
+    const zoom = Math.min(width, height) / 3.5 * view.zoom;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    for (let py = 0; py < height; py++) {
+      for (let px = 0; px < width; px++) {
+        const x = (px - centerX) / zoom + view.centerX;
+        const y = (py - centerY) / zoom + view.centerY;
+
+        const iter = mandelbrot(x, y, 100);
+        const index = (py * width + px) * 4;
+
+        if (iter === 100) {
+          data[index] = 0;     // R
+          data[index + 1] = 0; // G
+          data[index + 2] = 0; // B
+        } else {
+          const hue = (iter * 8) % 360;
+          const saturation = 100;
+          const lightness = iter < 100 ? 50 : 0;
+
+          const [r, g, b] = hslToRgb(hue / 360, saturation / 100, lightness / 100);
+          data[index] = r;     // R
+          data[index + 1] = g; // G
+          data[index + 2] = b; // B
+        }
+        data[index + 3] = 255; // A
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+  }, []);
+
   const renderFractal = useCallback(() => {
     if (is3D) return; // 3D rendering is handled by Three.js
     if (!canvasRef.current || dimensions.width === 0 || dimensions.height === 0) return;
@@ -541,26 +618,11 @@ export default function FractalExplorer({}: FractalExplorerProps) {
 
       renderMandelbrot(ctx, dimensions.width, dimensions.height, viewState);
     }
-  }, [dimensions, viewState, webgpuRenderer, supportsWebGPU, renderFractalWebGPU, is3D]);
+  }, [dimensions, viewState, webgpuRenderer, supportsWebGPU, renderFractalWebGPU, is3D, renderMandelbrot]);
 
   useEffect(() => {
     renderFractal();
   }, [renderFractal]);
-
-  const mandelbrot = (cx: number, cy: number, maxIter: number = 100): number => {
-    let x = 0;
-    let y = 0;
-    let iter = 0;
-
-    while (x * x + y * y <= 4 && iter < maxIter) {
-      const xtemp = x * x - y * y + cx;
-      y = 2 * x * y + cy;
-      x = xtemp;
-      iter++;
-    }
-
-    return iter;
-  };
 
   const handleWheel = useCallback((event: WheelEvent) => {
     event.preventDefault();
@@ -786,75 +848,20 @@ export default function FractalExplorer({}: FractalExplorerProps) {
     const element = is3D ? mountRef.current : canvasRef.current;
     if (!element) return;
 
-    const wheelHandler = is3D ? handleWheel3D : handleWheel;
+    const wheelHandler = (event: Event) => {
+      const wheelEvent = event as WheelEvent;
+      if (is3D) {
+        handleWheel3D(wheelEvent);
+      } else {
+        handleWheel(wheelEvent);
+      }
+    };
+
     element.addEventListener('wheel', wheelHandler);
     return () => element.removeEventListener('wheel', wheelHandler);
   }, [handleWheel, handleWheel3D, is3D]);
 
-  const renderMandelbrot = (ctx: CanvasRenderingContext2D, width: number, height: number, view: ViewState) => {
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data;
 
-    const zoom = Math.min(width, height) / 3.5 * view.zoom;
-    const centerX = width / 2;
-    const centerY = height / 2;
-
-    for (let py = 0; py < height; py++) {
-      for (let px = 0; px < width; px++) {
-        const x = (px - centerX) / zoom + view.centerX;
-        const y = (py - centerY) / zoom + view.centerY;
-        
-        const iter = mandelbrot(x, y, 100);
-        const index = (py * width + px) * 4;
-
-        if (iter === 100) {
-          data[index] = 0;     // R
-          data[index + 1] = 0; // G
-          data[index + 2] = 0; // B
-        } else {
-          const hue = (iter * 8) % 360;
-          const saturation = 100;
-          const lightness = iter < 100 ? 50 : 0;
-          
-          const [r, g, b] = hslToRgb(hue / 360, saturation / 100, lightness / 100);
-          data[index] = r;     // R
-          data[index + 1] = g; // G
-          data[index + 2] = b; // B
-        }
-        data[index + 3] = 255; // A
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-  };
-
-  const hslToRgb = (h: number, s: number, l: number): [number, number, number] => {
-    const c = (1 - Math.abs(2 * l - 1)) * s;
-    const x = c * (1 - Math.abs((h * 6) % 2 - 1));
-    const m = l - c / 2;
-    
-    let r = 0, g = 0, b = 0;
-    
-    if (0 <= h && h < 1/6) {
-      r = c; g = x; b = 0;
-    } else if (1/6 <= h && h < 2/6) {
-      r = x; g = c; b = 0;
-    } else if (2/6 <= h && h < 3/6) {
-      r = 0; g = c; b = x;
-    } else if (3/6 <= h && h < 4/6) {
-      r = 0; g = x; b = c;
-    } else if (4/6 <= h && h < 5/6) {
-      r = x; g = 0; b = c;
-    } else if (5/6 <= h && h < 1) {
-      r = c; g = 0; b = x;
-    }
-    
-    return [
-      Math.round((r + m) * 255),
-      Math.round((g + m) * 255),
-      Math.round((b + m) * 255)
-    ];
-  };
 
   return (
     <>
