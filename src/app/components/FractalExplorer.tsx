@@ -57,6 +57,7 @@ export default function FractalExplorer() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [isAnimating, setIsAnimating] = useState(false);
   const [is3D, setIs3D] = useState(false);
+  const [showControls, setShowControls] = useState(true);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isRotating, setIsRotating] = useState(false);
   const [resolution, setResolution] = useState(128);
@@ -861,7 +862,103 @@ export default function FractalExplorer() {
     return () => element.removeEventListener('wheel', wheelHandler);
   }, [handleWheel, handleWheel3D, is3D]);
 
+  // Touch gestures: 1-finger pan (2D) / rotate (3D), 2-finger pinch-zoom (both)
+  useEffect(() => {
+    const element = is3D ? mountRef.current : canvasRef.current;
+    if (!element) return;
 
+    const gesture = { mode: null as null | 'pan' | 'rotate' | 'pinch', lastX: 0, lastY: 0, lastDist: 0 };
+    const dist = (a: Touch, b: Touch) => Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+
+    const onStart = (evt: Event) => {
+      const e = evt as TouchEvent;
+      if (e.touches.length === 1) {
+        gesture.mode = is3D ? 'rotate' : 'pan';
+        gesture.lastX = e.touches[0].clientX;
+        gesture.lastY = e.touches[0].clientY;
+      } else if (e.touches.length === 2) {
+        gesture.mode = 'pinch';
+        gesture.lastDist = dist(e.touches[0], e.touches[1]);
+      }
+    };
+
+    const onMove = (evt: Event) => {
+      const e = evt as TouchEvent;
+      e.preventDefault();
+      if (gesture.mode === 'pan' && e.touches.length === 1) {
+        const t = e.touches[0];
+        const deltaX = t.clientX - gesture.lastX;
+        const deltaY = t.clientY - gesture.lastY;
+        setViewState((prev) => {
+          const currentZoom = (Math.min(dimensions.width, dimensions.height) / 3.5) * prev.zoom;
+          return { ...prev, centerX: prev.centerX - deltaX / currentZoom, centerY: prev.centerY - deltaY / currentZoom };
+        });
+        gesture.lastX = t.clientX;
+        gesture.lastY = t.clientY;
+      } else if (gesture.mode === 'rotate' && e.touches.length === 1 && cameraRef.current) {
+        const t = e.touches[0];
+        const deltaX = t.clientX - gesture.lastX;
+        const deltaY = t.clientY - gesture.lastY;
+        const camera = cameraRef.current;
+        const spherical = new THREE.Spherical();
+        spherical.setFromVector3(camera.position);
+        spherical.theta -= deltaX * 0.005;
+        spherical.phi += deltaY * 0.005;
+        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+        camera.position.setFromSpherical(spherical);
+        camera.lookAt(0, 0, 0);
+        gesture.lastX = t.clientX;
+        gesture.lastY = t.clientY;
+      } else if (gesture.mode === 'pinch' && e.touches.length === 2) {
+        const newDist = dist(e.touches[0], e.touches[1]);
+        const ratio = gesture.lastDist > 0 ? newDist / gesture.lastDist : 1;
+        if (is3D && cameraRef.current) {
+          const camera = cameraRef.current;
+          const direction = new THREE.Vector3();
+          camera.getWorldDirection(direction);
+          camera.position.add(direction.multiplyScalar((ratio - 1) * camera.position.length()));
+          const d = camera.position.length();
+          if (d < 2) camera.position.normalize().multiplyScalar(2);
+          else if (d > 50) camera.position.normalize().multiplyScalar(50);
+        } else {
+          const rect = element.getBoundingClientRect();
+          const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+          const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+          setViewState((prev) => {
+            const currentZoom = (Math.min(dimensions.width, dimensions.height) / 3.5) * prev.zoom;
+            const realX = (midX - dimensions.width / 2) / currentZoom + prev.centerX;
+            const realY = (midY - dimensions.height / 2) / currentZoom + prev.centerY;
+            return {
+              zoom: prev.zoom * ratio,
+              centerX: realX - (midX - dimensions.width / 2) / (currentZoom * ratio),
+              centerY: realY - (midY - dimensions.height / 2) / (currentZoom * ratio),
+            };
+          });
+        }
+        gesture.lastDist = newDist;
+      }
+    };
+
+    const onEnd = (evt: Event) => {
+      const e = evt as TouchEvent;
+      if (e.touches.length === 0) {
+        gesture.mode = null;
+      } else if (e.touches.length === 1) {
+        gesture.mode = is3D ? 'rotate' : 'pan';
+        gesture.lastX = e.touches[0].clientX;
+        gesture.lastY = e.touches[0].clientY;
+      }
+    };
+
+    element.addEventListener('touchstart', onStart, { passive: false });
+    element.addEventListener('touchmove', onMove, { passive: false });
+    element.addEventListener('touchend', onEnd, { passive: false });
+    return () => {
+      element.removeEventListener('touchstart', onStart);
+      element.removeEventListener('touchmove', onMove);
+      element.removeEventListener('touchend', onEnd);
+    };
+  }, [is3D, dimensions]);
 
   return (
     <>
@@ -869,7 +966,7 @@ export default function FractalExplorer() {
       <div
         ref={mountRef}
         className={`fixed top-0 left-0 w-full h-full ${is3D ? 'block' : 'hidden'}`}
-        style={{ zIndex: 0 }}
+        style={{ zIndex: 0, touchAction: 'none' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -887,6 +984,7 @@ export default function FractalExplorer() {
           top: 0,
           left: 0,
           zIndex: 0,
+          touchAction: 'none',
           cursor: isDragging ? 'grabbing' : isSelecting ? 'crosshair' : 'grab'
         }}
         onMouseDown={handleMouseDown}
@@ -896,6 +994,7 @@ export default function FractalExplorer() {
       />
       
       {/* 3D/2D Toggle and Controls */}
+      {showControls && (
       <div className="fixed top-6 left-6 z-10 bg-black bg-opacity-80 text-white p-3 rounded-lg">
         <div className="text-sm font-bold mb-2">View Mode</div>
         <div className="flex gap-2 mb-3">
@@ -1032,6 +1131,7 @@ export default function FractalExplorer() {
           </>
         )}
       </div>
+      )}
 
       {/* Selection Rectangle (2D only) */}
       {isSelecting && selectionRect && !is3D && (
@@ -1047,7 +1147,7 @@ export default function FractalExplorer() {
       )}
 
       {/* Bookmarks Panel (2D only) */}
-      {bookmarks.length > 0 && !is3D && (
+      {showControls && bookmarks.length > 0 && !is3D && (
         <div className="fixed top-6 right-6 z-10 bg-black bg-opacity-80 text-white p-4 rounded-lg max-w-xs">
           <div className="text-sm font-bold mb-3">📍 Bookmarks</div>
           <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -1084,7 +1184,7 @@ export default function FractalExplorer() {
       )}
       
       {/* Instructions overlay when no bookmarks (2D only) */}
-      {bookmarks.length === 0 && !is3D && (
+      {showControls && bookmarks.length === 0 && !is3D && (
         <div className="fixed top-6 right-6 z-10 bg-black bg-opacity-70 text-white p-3 rounded-lg text-sm">
           <div className="text-yellow-400 mb-1">📍 Create Bookmarks</div>
           <div className="text-xs">Hold Shift + drag to select areas</div>
@@ -1092,6 +1192,7 @@ export default function FractalExplorer() {
       )}
 
       {/* Render Info Overlay */}
+      {showControls && (
       <div className="fixed bottom-6 right-6 z-10 bg-black bg-opacity-70 text-white p-3 rounded-lg font-mono text-sm">
         <div className="text-xs opacity-75 mb-1">Render Info</div>
         <div>Mode: {is3D ? '3D Height Map' : '2D Fractal'}</div>
@@ -1103,6 +1204,16 @@ export default function FractalExplorer() {
           {is3D ? '🎮 Three.js' : (supportsWebGPU ? '🚀 WebGPU' : '🐌 CPU')}
         </div>
       </div>
+      )}
+
+      {/* Show/Hide controls toggle — always visible (mobile-friendly, 44px target) */}
+      <button
+        onClick={() => setShowControls((v) => !v)}
+        className="fixed bottom-6 left-6 z-20 bg-black bg-opacity-80 text-white w-11 h-11 rounded-full flex items-center justify-center text-lg shadow-lg active:scale-95"
+        aria-label={showControls ? 'Hide controls' : 'Show controls'}
+      >
+        {showControls ? '✕' : '⚙'}
+      </button>
     </>
   );
 }
