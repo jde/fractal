@@ -56,7 +56,7 @@ export default function FractalExplorer() {
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [isAnimating, setIsAnimating] = useState(false);
-  const [is3D, setIs3D] = useState(true);
+  const [is3D, setIs3D] = useState(false);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isRotating, setIsRotating] = useState(false);
   const [resolution, setResolution] = useState(128);
